@@ -1,22 +1,23 @@
 import { useStore } from 'zustand'
 import type { StoreApi, UseBoundStore } from 'zustand'
 import Dexie, { type Table } from 'dexie'
-import type { CollectSite, Determination, Specimen, Storage } from '@/types'
+import type { CollectSite, Determination, Loan, Specimen, Storage } from '@/types'
 
 /** IndexedDB 数据结构版本号 */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
   value: number
 }
 
-/** Dexie 封装：标本 / 采集地 / 保藏位置 / 鉴定记录 四张业务表 + 元数据表 */
+/** Dexie 封装：标本 / 采集地 / 保藏位置 / 鉴定记录 / 借还记录 五张业务表 + 元数据表 */
 class InsectLogDb extends Dexie {
   specimens!: Table<Specimen, string>
   sites!: Table<CollectSite, string>
   storages!: Table<Storage, string>
   determinations!: Table<Determination, string>
+  loans!: Table<Loan, string>
   meta!: Table<MetaRow, string>
 
   constructor() {
@@ -47,6 +48,16 @@ class InsectLogDb extends Dexie {
             }
           })
       })
+    // v3：新增「借还记录」表，借出时释放柜位、记录原柜位快照，归还后跟踪待归位
+    // 无需回填：没有借还记录的旧标本在派生保管状态时一律按「在库」兼容处理
+    this.version(SCHEMA_VERSION).stores({
+      specimens: 'id, code, order, family, status, siteId, collectDate',
+      sites: 'id, code, name, habitat',
+      storages: 'id, specimenId, cabinet, drawer',
+      determinations: 'id, specimenId, determiner, date',
+      loans: 'id, specimenId, phase, borrower, dueDate',
+      meta: 'key'
+    })
   }
 }
 
@@ -100,6 +111,13 @@ export async function seedDemoData(): Promise<void> {
   if (count > 0) return
 
   const today = new Date().toISOString().slice(0, 10)
+  const shiftDate = (days: number): string => {
+    const date = new Date()
+    date.setDate(date.getDate() + days)
+    return date.toISOString().slice(0, 10)
+  }
+  const weekAgo = shiftDate(-8)
+  const fortnightAhead = shiftDate(12)
 
   await db.sites.bulkPut([
     {
@@ -251,15 +269,62 @@ export async function seedDemoData(): Promise<void> {
       handler: '覃羽'
     },
     {
-      id: 'stg_002',
-      specimenId: 'sp_002',
-      method: '针插',
+      // sp_003 原柜位（C01-D1-B02-S05）：sp_003 外借后该位被 sp_004 占用，
+      // sp_003 归还时回不去原位，进入待归位区
+      id: 'stg_004',
+      specimenId: 'sp_004',
+      method: '浸液',
       cabinet: 'C01',
       drawer: 1,
       box: 2,
       slot: 5,
       storedDate: today,
       handler: '覃羽'
+    }
+  ])
+
+  await db.loans.bulkPut([
+    {
+      id: 'loan_002',
+      specimenId: 'sp_002',
+      borrower: '黔灵昆虫研究所 · 孟昭',
+      loanDate: weekAgo,
+      dueDate: fortnightAhead,
+      phase: '借出',
+      origin: {
+        cabinet: 'C01',
+        drawer: 1,
+        box: 2,
+        slot: 7,
+        method: '针插',
+        storageId: 'stg_002',
+        storedDate: today,
+        handler: '覃羽'
+      },
+      returnedDate: '',
+      shelvedDate: '',
+      note: '蛾类外生殖器比较研究'
+    },
+    {
+      id: 'loan_003',
+      specimenId: 'sp_003',
+      borrower: '云岭大学生态学院 · 白苓',
+      loanDate: weekAgo,
+      dueDate: fortnightAhead,
+      phase: '归还待归位',
+      origin: {
+        cabinet: 'C01',
+        drawer: 1,
+        box: 2,
+        slot: 5,
+        method: '针插',
+        storageId: 'stg_003',
+        storedDate: today,
+        handler: '覃羽'
+      },
+      returnedDate: today,
+      shelvedDate: '',
+      note: '原柜位已被 sp_004 占用，等待重新分配插位'
     }
   ])
 }

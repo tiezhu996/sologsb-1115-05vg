@@ -1,9 +1,12 @@
 import { NavLink, Outlet } from 'react-router-dom'
+import { useMemo } from 'react'
 import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { specimenStore } from '@/stores/specimenStore'
 import { siteStore } from '@/stores/siteStore'
 import { storageStore } from '@/stores/storageStore'
 import { determinationStore } from '@/stores/determinationStore'
+import { loanStore } from '@/stores/loanStore'
+import { buildCustodyMaps } from '@/utils/custody'
 
 const NAV = [
   { to: '/specimens', label: '标本清单', hint: '筛选 / 批量推进' },
@@ -19,8 +22,12 @@ export default function AppLayout(): JSX.Element {
   const sites = usePersistentStore(siteStore, (state) => state.rows)
   const storages = usePersistentStore(storageStore, (state) => state.rows)
   const determinations = usePersistentStore(determinationStore, (state) => state.rows)
+  const loans = usePersistentStore(loanStore, (state) => state.rows)
 
-  const pending = specimens.filter((item) => item.status === '待鉴定').length
+  const custodyMaps = useMemo(() => buildCustodyMaps(loans), [loans])
+  const pendingDet = specimens.filter((item) => item.status === '待鉴定').length
+  const onLoan = specimens.filter((item) => custodyMaps.custodyOf.get(item.id) === '外借').length
+  const pendingReturn = specimens.filter((item) => custodyMaps.custodyOf.get(item.id) === '待归位').length
 
   return (
     <div className="flex min-h-screen">
@@ -57,15 +64,23 @@ export default function AppLayout(): JSX.Element {
           </div>
           <div className="flex justify-between">
             <dt>待鉴定</dt>
-            <dd className="font-semibold">{pending}</dd>
+            <dd className="font-semibold">{pendingDet}</dd>
           </div>
           <div className="flex justify-between">
             <dt>采集地</dt>
             <dd className="font-semibold">{sites.length}</dd>
           </div>
           <div className="flex justify-between">
-            <dt>已入柜</dt>
+            <dt>柜内占用</dt>
             <dd className="font-semibold">{storages.length}</dd>
+          </div>
+          <div className="flex justify-between">
+            <dt>外借中</dt>
+            <dd className="font-semibold text-violet-200">{onLoan}</dd>
+          </div>
+          <div className="flex justify-between">
+            <dt>待归位</dt>
+            <dd className="font-semibold text-amber-200">{pendingReturn}</dd>
           </div>
           <div className="flex justify-between">
             <dt>鉴定记录</dt>

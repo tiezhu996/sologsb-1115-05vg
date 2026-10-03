@@ -2,25 +2,37 @@ import { useMemo, useState } from 'react'
 import type { Confidence, DetStatus, Determination, Specimen } from '@/types'
 import { CONFIDENCES } from '@/types'
 import StatusTag from '@/components/common/StatusTag'
+import CustodyTag from '@/components/common/CustodyTag'
 import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { determinationStore } from '@/stores/determinationStore'
 import { specimenStore } from '@/stores/specimenStore'
 import { siteStore } from '@/stores/siteStore'
+import { loanStore } from '@/stores/loanStore'
+import { buildCustodyMaps, custodyOfSpecimen, isOnLoan } from '@/utils/custody'
 import { downloadCsv } from '@/utils/export'
 import { specimenTaxon } from '@/utils/codec'
 import { uid } from '@/utils/id'
 
 const QUEUE_STATUSES: DetStatus[] = ['待鉴定', '初鉴', '待复核']
 
-/** 鉴定工作流：待鉴定队列逐条处理，落鉴定记录并推进标本状态 */
+/** 鉴定工作流：待鉴定队列逐条处理，落鉴定记录并推进标本状态；外借标本不进队列 */
 export default function DeterminationPage(): JSX.Element {
   const specimens = usePersistentStore(specimenStore, (state) => state.rows)
   const sites = usePersistentStore(siteStore, (state) => state.rows)
   const determinations = usePersistentStore(determinationStore, (state) => state.rows)
+  const loans = usePersistentStore(loanStore, (state) => state.rows)
 
+  const custodyMaps = useMemo(() => buildCustodyMaps(loans), [loans])
   const queue = useMemo(
-    () => specimens.filter((item) => QUEUE_STATUSES.includes(item.status)),
-    [specimens]
+    () =>
+      specimens.filter(
+        (item) => QUEUE_STATUSES.includes(item.status) && !isOnLoan(custodyMaps, item.id)
+      ),
+    [specimens, custodyMaps]
+  )
+  const onLoanCount = useMemo(
+    () => specimens.filter((item) => isOnLoan(custodyMaps, item.id)).length,
+    [specimens, custodyMaps]
   )
   const [activeId, setActiveId] = useState('')
   const active = specimens.find((item) => item.id === activeId) ?? queue[0] ?? null
@@ -48,6 +60,10 @@ export default function DeterminationPage(): JSX.Element {
   const submit = async (): Promise<void> => {
     if (!active) {
       setMessage('队列已清空，没有待处理标本')
+      return
+    }
+    if (isOnLoan(custodyMaps, active.id)) {
+      setMessage(`${active.code} 外借中，归还前不能新增鉴定记录`)
       return
     }
     if (!determiner.trim()) {
@@ -95,6 +111,7 @@ export default function DeterminationPage(): JSX.Element {
         conclusion: item.conclusion,
         reference: item.reference,
         confidence: item.confidence,
+        custody: specimen ? custodyOfSpecimen(custodyMaps, specimen.id) : '在库',
         needReview: item.needReview ? '是' : '否'
       }
     })
@@ -105,6 +122,7 @@ export default function DeterminationPage(): JSX.Element {
       { key: 'conclusion', label: '鉴定结论' },
       { key: 'reference', label: '依据文献' },
       { key: 'confidence', label: '置信度' },
+      { key: 'custody', label: '保管状态' },
       { key: 'needReview', label: '需复核' }
     ])
   }
@@ -126,6 +144,9 @@ export default function DeterminationPage(): JSX.Element {
       <section className="grid gap-4 md:grid-cols-[320px_1fr]">
         <div className="panel flex flex-col gap-2">
           <h2 className="text-sm font-semibold text-slate-700">待处理队列（{queue.length}）</h2>
+          {onLoanCount > 0 ? (
+            <p className="text-xs text-violet-700">另有 {onLoanCount} 份标本外借中，归还前不参与鉴定，已从队列排除</p>
+          ) : null}
           <div className="max-h-[420px] overflow-auto">
             {queue.map((specimen) => (
               <button
@@ -138,7 +159,10 @@ export default function DeterminationPage(): JSX.Element {
               >
                 <span className="flex items-center justify-between gap-2">
                   <span className="font-mono text-xs text-field-700">{specimen.code}</span>
-                  <StatusTag status={specimen.status} />
+                  <span className="flex items-center gap-1">
+                    <CustodyTag custody={custodyOfSpecimen(custodyMaps, specimen.id)} withDot={false} />
+                    <StatusTag status={specimen.status} />
+                  </span>
                 </span>
                 <span className="mt-0.5 block text-xs text-slate-600">{specimenTaxon(specimen)}</span>
                 <span className="block text-[11px] text-slate-400">
@@ -154,6 +178,11 @@ export default function DeterminationPage(): JSX.Element {
           <div className="panel">
             <h2 className="text-sm font-semibold text-slate-700">
               {active ? `处理 ${active.code}` : '请从左侧队列选择标本'}
+              {active ? (
+                <span className="ml-2 align-middle">
+                  <CustodyTag custody={custodyOfSpecimen(custodyMaps, active.id)} />
+                </span>
+              ) : null}
             </h2>
             {active ? (
               <p className="mt-1 text-xs text-slate-500">
@@ -247,6 +276,7 @@ export default function DeterminationPage(): JSX.Element {
                 <th className="border border-slate-200 px-2 py-1">依据文献</th>
                 <th className="border border-slate-200 px-2 py-1">置信度</th>
                 <th className="border border-slate-200 px-2 py-1">标本状态</th>
+                <th className="border border-slate-200 px-2 py-1">保管状态</th>
                 <th className="border border-slate-200 px-2 py-1">操作</th>
               </tr>
             </thead>
@@ -262,6 +292,9 @@ export default function DeterminationPage(): JSX.Element {
                     <td className="border border-slate-200 px-2 py-1 text-xs text-slate-500">{record.reference || '—'}</td>
                     <td className="border border-slate-200 px-2 py-1">{record.confidence}</td>
                     <td className="border border-slate-200 px-2 py-1">{specimen ? <StatusTag status={specimen.status} /> : '—'}</td>
+                    <td className="border border-slate-200 px-2 py-1">
+                      {specimen ? <CustodyTag custody={custodyOfSpecimen(custodyMaps, specimen.id)} withDot={false} /> : '—'}
+                    </td>
                     <td className="border border-slate-200 px-2 py-1">
                       <button
                         className="btn-danger"
