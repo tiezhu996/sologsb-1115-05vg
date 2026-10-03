@@ -1,11 +1,14 @@
 import type { ReactNode } from 'react'
-import type { CollectSite, Specimen } from '@/types'
+import type { CollectSite, CustodyStatus, Specimen } from '@/types'
 import { specimenTaxon } from '@/utils/codec'
 import StatusTag from './StatusTag'
+import CustodyTag from './CustodyTag'
 
 export interface SpecimenCardProps {
   specimen: Specimen
   site?: CollectSite
+  /** 保管状态（在库 / 外借 / 待归位），缺省按在库兼容显示 */
+  custody?: CustodyStatus
   /** 是否处于选中态 */
   selected?: boolean
   /** 左上角勾选（批量操作） */
@@ -16,10 +19,11 @@ export interface SpecimenCardProps {
   footer?: ReactNode
 }
 
-/** 标本摘要卡片：分类阶元 + 采集地 + 鉴定状态 */
+/** 标本摘要卡片：分类阶元 + 采集地 + 鉴定状态 + 保管状态 */
 export default function SpecimenCard({
   specimen,
   site,
+  custody = '在库',
   selected = false,
   selectable = false,
   onToggle,
@@ -60,7 +64,10 @@ export default function SpecimenCard({
             </p>
           </div>
         </div>
-        <StatusTag status={specimen.status} />
+        <span className="flex shrink-0 flex-col items-end gap-1">
+          <StatusTag status={specimen.status} />
+          <CustodyTag status={custody} />
+        </span>
       </header>
       <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-600">
         <div>

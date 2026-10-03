@@ -19,6 +19,12 @@ export const determinationStore = create<DeterminationState>((set, get) => ({
     set({ rows, loaded: true })
   },
   save: async (row) => {
+    // 外借期间标本不在馆，不允许新增鉴定记录（待归位标本已回馆，不受限）
+    const loans = await db.loans.where('specimenId').equals(row.specimenId).toArray()
+    const openLoan = loans.find((loan) => loan.status === '外借')
+    if (openLoan) {
+      throw new Error(`该标本正在外借（借用人 ${openLoan.borrower}），归还前不能新增鉴定`)
+    }
     await putRow<Determination>(db.determinations, row)
     await get().hydrate()
   },

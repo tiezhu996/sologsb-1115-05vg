@@ -2,10 +2,13 @@ import { useMemo, useState } from 'react'
 import type { Confidence, DetStatus, Determination, Specimen } from '@/types'
 import { CONFIDENCES } from '@/types'
 import StatusTag from '@/components/common/StatusTag'
+import CustodyTag from '@/components/common/CustodyTag'
 import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { determinationStore } from '@/stores/determinationStore'
 import { specimenStore } from '@/stores/specimenStore'
 import { siteStore } from '@/stores/siteStore'
+import { loanStore } from '@/stores/loanStore'
+import { activeLoansBySpecimen, custodyOf } from '@/utils/custody'
 import { downloadCsv } from '@/utils/export'
 import { specimenTaxon } from '@/utils/codec'
 import { uid } from '@/utils/id'
@@ -17,6 +20,14 @@ export default function DeterminationPage(): JSX.Element {
   const specimens = usePersistentStore(specimenStore, (state) => state.rows)
   const sites = usePersistentStore(siteStore, (state) => state.rows)
   const determinations = usePersistentStore(determinationStore, (state) => state.rows)
+  const loans = usePersistentStore(loanStore, (state) => state.rows)
+
+  const activeLoans = useMemo(() => activeLoansBySpecimen(loans), [loans])
+  const custodyOfSpecimen = useMemo(() => (specimenId: string) => custodyOf(specimenId, activeLoans), [activeLoans])
+  const onLoanSpecimenIds = useMemo(
+    () => new Set(loans.filter((loan) => loan.status === '外借').map((loan) => loan.specimenId)),
+    [loans]
+  )
 
   const queue = useMemo(
     () => specimens.filter((item) => QUEUE_STATUSES.includes(item.status)),
@@ -32,6 +43,7 @@ export default function DeterminationPage(): JSX.Element {
   const [confidence, setConfidence] = useState<Confidence>('中')
   const [needReview, setNeedReview] = useState(false)
   const [message, setMessage] = useState('')
+  const [warning, setWarning] = useState('')
 
   const siteName = (siteId: string): string => sites.find((site) => site.id === siteId)?.name ?? '未关联采集地'
 
@@ -43,11 +55,19 @@ export default function DeterminationPage(): JSX.Element {
     setConclusion([specimen.genus, specimen.species].filter(Boolean).join(' '))
     setNeedReview(specimen.status === '待复核')
     setMessage('')
+    setWarning('')
   }
 
   const submit = async (): Promise<void> => {
     if (!active) {
       setMessage('队列已清空，没有待处理标本')
+      return
+    }
+    if (onLoanSpecimenIds.has(active.id)) {
+      const loan = activeLoans.get(active.id)
+      setWarning(
+        `${active.code} 正在外借（借用人 ${loan?.borrower ?? '—'}，应还 ${loan?.dueDate || '—'}），归还前不能新增鉴定`
+      )
       return
     }
     if (!determiner.trim()) {
@@ -68,21 +88,26 @@ export default function DeterminationPage(): JSX.Element {
       confidence,
       needReview
     }
-    await determinationStore.getState().save(record)
-    await specimenStore.getState().save({
-      ...active,
-      status: needReview ? '待复核' : '已鉴定',
-      determiner: determiner.trim()
-    })
-    setMessage(
-      `${active.code} 已落鉴定记录：${record.conclusion}（置信度 ${record.confidence}，状态更新为${
-        needReview ? '待复核' : '已鉴定'
-      }）`
-    )
-    setActiveId('')
-    setConclusion('')
-    setReference('')
-    setNeedReview(false)
+    try {
+      await determinationStore.getState().save(record)
+      await specimenStore.getState().save({
+        ...active,
+        status: needReview ? '待复核' : '已鉴定',
+        determiner: determiner.trim()
+      })
+      setMessage(
+        `${active.code} 已落鉴定记录：${record.conclusion}（置信度 ${record.confidence}，状态更新为${
+          needReview ? '待复核' : '已鉴定'
+        }）`
+      )
+      setWarning('')
+      setActiveId('')
+      setConclusion('')
+      setReference('')
+      setNeedReview(false)
+    } catch (error) {
+      setWarning(error instanceof Error ? error.message : '鉴定记录写入失败，未产生任何记录')
+    }
   }
 
   const exportHistory = (): void => {
@@ -127,25 +152,32 @@ export default function DeterminationPage(): JSX.Element {
         <div className="panel flex flex-col gap-2">
           <h2 className="text-sm font-semibold text-slate-700">待处理队列（{queue.length}）</h2>
           <div className="max-h-[420px] overflow-auto">
-            {queue.map((specimen) => (
-              <button
-                key={specimen.id}
-                type="button"
-                onClick={() => pick(specimen)}
-                className={`mb-1.5 w-full rounded-lg border px-3 py-2 text-left transition ${
-                  active?.id === specimen.id ? 'border-field-500 bg-field-50' : 'border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                <span className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-xs text-field-700">{specimen.code}</span>
-                  <StatusTag status={specimen.status} />
-                </span>
-                <span className="mt-0.5 block text-xs text-slate-600">{specimenTaxon(specimen)}</span>
-                <span className="block text-[11px] text-slate-400">
-                  {siteName(specimen.siteId)} · {specimen.collectDate}
-                </span>
-              </button>
-            ))}
+            {queue.map((specimen) => {
+              const away = onLoanSpecimenIds.has(specimen.id)
+              return (
+                <button
+                  key={specimen.id}
+                  type="button"
+                  onClick={() => pick(specimen)}
+                  className={`mb-1.5 w-full rounded-lg border px-3 py-2 text-left transition ${
+                    active?.id === specimen.id ? 'border-field-500 bg-field-50' : 'border-slate-200 hover:bg-slate-50'
+                  } ${away ? 'opacity-70' : ''}`}
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-xs text-field-700">{specimen.code}</span>
+                    <span className="flex shrink-0 items-center gap-1">
+                      <CustodyTag status={custodyOfSpecimen(specimen.id)} />
+                      <StatusTag status={specimen.status} />
+                    </span>
+                  </span>
+                  <span className="mt-0.5 block text-xs text-slate-600">{specimenTaxon(specimen)}</span>
+                  <span className="block text-[11px] text-slate-400">
+                    {siteName(specimen.siteId)} · {specimen.collectDate}
+                    {away ? ' · 外借中，暂不能鉴定' : ''}
+                  </span>
+                </button>
+              )
+            })}
             {queue.length === 0 ? <p className="text-sm text-slate-400">队列已清空，所有标本都已处理</p> : null}
           </div>
         </div>
@@ -156,9 +188,12 @@ export default function DeterminationPage(): JSX.Element {
               {active ? `处理 ${active.code}` : '请从左侧队列选择标本'}
             </h2>
             {active ? (
-              <p className="mt-1 text-xs text-slate-500">
-                {specimenTaxon(active)} · {siteName(active.siteId)} · 采集人 {active.collector || '—'} · 采集方式{' '}
-                {active.method} · 体长 {active.bodyLength} mm
+              <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                <span>
+                  {specimenTaxon(active)} · {siteName(active.siteId)} · 采集人 {active.collector || '—'} · 采集方式{' '}
+                  {active.method} · 体长 {active.bodyLength} mm
+                </span>
+                <CustodyTag status={custodyOfSpecimen(active.id)} />
               </p>
             ) : null}
             <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -193,9 +228,16 @@ export default function DeterminationPage(): JSX.Element {
                 标记为需复核（状态置为「待复核」）
               </label>
             </div>
+            {warning ? <p className="mt-3 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700">{warning}</p> : null}
             {message ? <p className="mt-3 text-sm text-field-700">{message}</p> : null}
             <div className="mt-3 flex gap-2">
-              <button className="btn-primary" type="button" onClick={() => void submit()}>
+              <button
+                className="btn-primary"
+                type="button"
+                disabled={!!active && onLoanSpecimenIds.has(active.id)}
+                title={active && onLoanSpecimenIds.has(active.id) ? '外借中的标本归还前不能新增鉴定' : ''}
+                onClick={() => void submit()}
+              >
                 提交鉴定记录
               </button>
               <button
@@ -206,6 +248,7 @@ export default function DeterminationPage(): JSX.Element {
                   setReference('')
                   setNeedReview(false)
                   setMessage('')
+                  setWarning('')
                 }}
               >
                 清空结论
@@ -237,7 +280,7 @@ export default function DeterminationPage(): JSX.Element {
       <section className="panel">
         <h2 className="text-sm font-semibold text-slate-700">全部鉴定记录（{determinations.length}）</h2>
         <div className="mt-2 overflow-x-auto">
-          <table className="w-full min-w-[760px] border-collapse text-sm">
+          <table className="w-full min-w-[860px] border-collapse text-sm">
             <thead>
               <tr className="bg-slate-50 text-left text-xs text-slate-500">
                 <th className="border border-slate-200 px-2 py-1">标本编号</th>
@@ -246,7 +289,8 @@ export default function DeterminationPage(): JSX.Element {
                 <th className="border border-slate-200 px-2 py-1">结论</th>
                 <th className="border border-slate-200 px-2 py-1">依据文献</th>
                 <th className="border border-slate-200 px-2 py-1">置信度</th>
-                <th className="border border-slate-200 px-2 py-1">标本状态</th>
+                <th className="border border-slate-200 px-2 py-1">鉴定状态</th>
+                <th className="border border-slate-200 px-2 py-1">保管状态</th>
                 <th className="border border-slate-200 px-2 py-1">操作</th>
               </tr>
             </thead>
@@ -262,6 +306,9 @@ export default function DeterminationPage(): JSX.Element {
                     <td className="border border-slate-200 px-2 py-1 text-xs text-slate-500">{record.reference || '—'}</td>
                     <td className="border border-slate-200 px-2 py-1">{record.confidence}</td>
                     <td className="border border-slate-200 px-2 py-1">{specimen ? <StatusTag status={specimen.status} /> : '—'}</td>
+                    <td className="border border-slate-200 px-2 py-1">
+                      {specimen ? <CustodyTag status={custodyOfSpecimen(specimen.id)} /> : '—'}
+                    </td>
                     <td className="border border-slate-200 px-2 py-1">
                       <button
                         className="btn-danger"

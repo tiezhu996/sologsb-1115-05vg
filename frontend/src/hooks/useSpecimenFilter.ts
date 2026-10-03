@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react'
-import type { DetStatus, Specimen } from '@/types'
+import type { CustodyStatus, DetStatus, Specimen } from '@/types'
 
 export interface SpecimenFilterState {
   order: string
   family: string
   status: DetStatus | ''
+  /** 保管状态筛选由页面根据借还记录自行映射后传入 */
+  custody: CustodyStatus | ''
   siteId: string
   dateFrom: string
   dateTo: string
@@ -15,14 +17,21 @@ export const EMPTY_FILTER: SpecimenFilterState = {
   order: '',
   family: '',
   status: '',
+  custody: '',
   siteId: '',
   dateFrom: '',
   dateTo: '',
   keyword: ''
 }
 
-/** 组合筛选条件，返回过滤结果、命中数与可选的目/科候选 */
-export function useSpecimenFilter(specimens: Specimen[]): {
+/**
+ * 组合筛选条件，返回过滤结果、命中数与可选的目/科候选。
+ * custodyOf 由调用方提供（页面持有借还记录），避免本 hook 直接依赖 store。
+ */
+export function useSpecimenFilter(
+  specimens: Specimen[],
+  custodyOf?: (specimenId: string) => CustodyStatus
+): {
   filter: SpecimenFilterState
   setFilter: (patch: Partial<SpecimenFilterState>) => void
   reset: () => void
@@ -53,6 +62,7 @@ export function useSpecimenFilter(specimens: Specimen[]): {
       if (filter.order && item.order !== filter.order) return false
       if (filter.family && item.family !== filter.family) return false
       if (filter.status && item.status !== filter.status) return false
+      if (filter.custody && custodyOf && custodyOf(item.id) !== filter.custody) return false
       if (filter.siteId && item.siteId !== filter.siteId) return false
       if (filter.dateFrom && item.collectDate < filter.dateFrom) return false
       if (filter.dateTo && item.collectDate > filter.dateTo) return false
@@ -73,7 +83,7 @@ export function useSpecimenFilter(specimens: Specimen[]): {
       }
       return true
     })
-  }, [specimens, filter])
+  }, [specimens, filter, custodyOf])
 
   return { filter, setFilter, reset, filtered, hitCount: filtered.length, orders, families }
 }

@@ -35,6 +35,14 @@ export const specimenStore = create<SpecimenState>((set, get) => ({
     await get().hydrate()
   },
   bulkSetStatus: async (ids, status) => {
+    // 外借中的标本不在馆，其鉴定状态不能被推进
+    const openLoans = await db.loans.where('status').equals('外借').toArray()
+    const loanedIds = new Set(openLoans.map((loan) => loan.specimenId))
+    const blocked = [...new Set(ids)].filter((id) => loanedIds.has(id))
+    if (blocked.length > 0) {
+      const codeOf = (id: string): string => get().rows.find((row) => row.id === id)?.code ?? id
+      throw new Error(`以下标本正在外借，不能推进鉴定状态：${blocked.map(codeOf).join('、')}`)
+    }
     const targets = get().rows.filter((row) => ids.includes(row.id))
     await putRows<Specimen>(
       db.specimens,
